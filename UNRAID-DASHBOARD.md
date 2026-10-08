@@ -110,3 +110,7 @@ The old container is retained stopped as hdscanner-before-browser-20261008. Its 
 Deploy source is staged in /mnt/user/appdata/hdscanner/browser-source. deploy/unraid.browser.compose.yml records a reproducible two-service setup; do not start that stack while the command-line-created containers already exist. browser/Dockerfile and Dockerfile.browser-scanner build the two images from the existing local base images.
 
 Working source is located at /Users/jakeihasz/GitHub/hdscanner. Retailer requests and scheduled collection run on Unraid; the Mac is not required for collection.
+
+## Fork source and deployment
+
+The working fork is https://github.com/JakeAi/HDScanner, with KenStager/HDScanner configured as the upstream remote. All 1,065 Python tests passed after integrating upstream main. The scanner can be built directly from this fork with `docker build -t hdscanner:fork -f Dockerfile .`; the browser remains the separate private service above. Dockerfile.browser-scanner also copies the complete fork source when using the existing local dashboard base image.
