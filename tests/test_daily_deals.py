@@ -118,6 +118,9 @@ def dd_settings(tmp_path) -> Settings:
         brands="Milwaukee",
         daily_deals_cursor_path=str(tmp_path / "dd_cursor"),
         daily_deals_evidence_path=str(tmp_path / "evidence.jsonl"),
+        # The suite below exercises the brand filter itself, so probing is
+        # opt-in per test. TestProbesUnknownItems covers the shipped default.
+        daily_deals_probe_unknown=0,
         store_raw_json=False,
     )
 
@@ -215,7 +218,7 @@ class TestRunDailyDeals:
         assert summary.skipped is False
         assert client.requested == ["222"]
 
-    async def test_set_with_no_tracked_brands_costs_nothing(self, dd_settings, fresh_db):
+    async def test_set_with_no_tracked_brands_costs_nothing_when_probing_is_off(self, dd_settings, fresh_db):
         """The measured case: ~110 patio and garden items, none of them ours."""
         from hd.db import base
 
@@ -279,6 +282,8 @@ def poll_settings(tmp_path) -> Settings:
         daily_deals_poll_seconds=120,
         daily_deals_poll_max=6,
         daily_deals_poll_jitter_seconds=0,
+        daily_deals_poll_phase_seconds=0,
+        daily_deals_probe_unknown=0,
         throttle_cooldown_path=str(tmp_path / "cooldown"),
         store_raw_json=False,
     )
@@ -314,7 +319,19 @@ def _at(hour: int, minute: int, second: int = 0):
     return lambda: fixed
 
 
+def _at_on(day: int, hour: int, minute: int, second: int = 0):
+    """A clock frozen at an Eastern wall time on a chosen September 2026 date."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    fixed = datetime(2026, 9, day, hour, minute, second, tzinfo=ZoneInfo("America/New_York"))
+    return lambda: fixed
+
+
 ON_REFRESH = _at(3, 0, 20)
+# 2026-09-03 has an even ordinal and 2026-09-04 an odd one, so these two are
+# the even-phase and odd-phase nights the alternation distinguishes.
+ON_REFRESH_ODD_NIGHT = _at_on(4, 3, 0, 20)
 
 
 class TestWaitForRefresh:
@@ -344,7 +361,9 @@ class TestWaitForRefresh:
         assert summary.snapshots == 2
         assert Path(poll_settings.daily_deals_cursor_path).read_text() == "2026-09-04"
         phases = [e["phase"] for e in _evidence(poll_settings)]
-        assert phases == ["poll", "poll", "flip", "priced", "priced", "swept"]
+        # The partition is recorded once, between the flip and the first price:
+        # what the set was measured against, before anything was requested.
+        assert phases == ["poll", "poll", "flip", "partition", "priced", "priced", "swept"]
         flip = next(e for e in _evidence(poll_settings) if e["phase"] == "flip")
         assert flip["previous"] == "2026-09-03" and flip["end_date"] == "2026-09-04"
         assert flip["poll"] == 3 and "seconds_after_start" in flip
@@ -668,3 +687,182 @@ class TestEvidenceFile:
         assert phases[-1] == "swept"
         assert _evidence(poll_settings)[-1]["cursor_saved"] is False
         assert not Path(poll_settings.daily_deals_cursor_path).exists()
+
+
+class TestPollPhaseAlternates:
+    """The six reads are held back half an interval on alternate nights, so
+    across nights they fall on minutes a fixed series never samples."""
+
+    async def _run(self, settings, clock, sets, cursor):
+        from pathlib import Path
+        from hd.db import base
+        from hd.pipeline.daily_deals import wait_for_refresh
+
+        await base.init_db(settings)
+        Path(settings.daily_deals_cursor_path).write_text(cursor)
+        sleep = FakeSleep()
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set", side_effect=_sets(*sets)):
+            summary = await wait_for_refresh(
+                settings, client=FakeClient(), sleep=sleep, now_et=clock,
+            )
+        return summary, sleep
+
+    async def test_even_night_starts_on_the_refresh(self, poll_settings, fresh_db):
+        poll_settings.daily_deals_poll_phase_seconds = 60
+        poll_settings.daily_deals_poll_max = 2
+        _, sleep = await self._run(
+            poll_settings, ON_REFRESH, ("2026-09-03", "2026-09-03"), "2026-09-03",
+        )
+        # Only the interval between the two reads — nothing before the first.
+        assert sleep.calls == [120]
+
+    async def test_odd_night_holds_the_first_read_back_one_half_interval(
+        self, poll_settings, fresh_db,
+    ):
+        poll_settings.daily_deals_poll_phase_seconds = 60
+        poll_settings.daily_deals_poll_max = 2
+        _, sleep = await self._run(
+            poll_settings, ON_REFRESH_ODD_NIGHT, ("2026-09-04", "2026-09-04"), "2026-09-04",
+        )
+        assert sleep.calls == [60, 120]
+
+    async def test_zero_disables_the_alternation(self, poll_settings, fresh_db):
+        poll_settings.daily_deals_poll_phase_seconds = 0
+        poll_settings.daily_deals_poll_max = 2
+        _, sleep = await self._run(
+            poll_settings, ON_REFRESH_ODD_NIGHT, ("2026-09-04", "2026-09-04"), "2026-09-04",
+        )
+        assert sleep.calls == [120]
+
+    async def test_a_late_start_is_not_delayed_further(self, poll_settings, fresh_db):
+        """Outside the window the poll takes its one read now: the slot is
+        already missed, and waiting would only age the reading."""
+        poll_settings.daily_deals_poll_phase_seconds = 60
+        summary, sleep = await self._run(
+            poll_settings, _at_on(4, 22, 31), ("2026-09-04",), "2026-09-04",
+        )
+        assert sleep.calls == []
+        assert summary.polls == 1 and summary.stopped == "late"
+
+    async def test_flip_evidence_records_the_night_s_phase(self, poll_settings, fresh_db):
+        poll_settings.daily_deals_poll_phase_seconds = 60
+        summary, _ = await self._run(
+            poll_settings, ON_REFRESH_ODD_NIGHT, ("2026-09-05",), "2026-09-04",
+        )
+        flip = [e for e in _evidence(poll_settings) if e["phase"] == "flip"]
+        assert len(flip) == 1
+        assert flip[0]["start_phase_seconds"] == 60
+        assert flip[0]["end_date"] == "2026-09-05"
+
+
+class TestProbesUnknownItems:
+    """The catalog can only recognise a tool already in it, so the one case the
+    brand filter is blind to is a tracked brand reaching the deals for the first
+    time. Owner decision 2026-09-03: spend a request per unknown id to see it."""
+
+    async def test_probing_is_off_by_default(self):
+        # Reverted 2026-09-03: a probe is discarded unless it is our brand, so
+        # the spend never decays, and recording it instead would enrol non-tool
+        # items in the snapshot rotation. The partition line sizes the blind
+        # spot for nothing; raise this only against those counts.
+        assert Settings().daily_deals_probe_unknown == 0
+
+    async def test_unknown_ids_are_requested_by_default(self, dd_settings, fresh_db):
+        from hd.db import base
+        from hd.pipeline.daily_deals import run_daily_deals
+
+        await base.init_db(dd_settings)
+        await seed_catalog(dd_settings, **{"111": "Milwaukee"})
+        dd_settings.daily_deals_probe_unknown = 250
+        deal_set = DailyDealSet(end_date="2026-08-18", item_ids=["111", "222", "333"])
+        client = FakeClient()
+
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set", return_value=deal_set):
+            summary = await run_daily_deals(dd_settings, client=client)
+
+        # The catalogued item first, then every id the catalog could not answer for.
+        assert client.requested == ["111", "222", "333"]
+        assert summary.skipped_unknown == 0
+
+    async def test_probing_does_not_outrun_the_request_budget(self, dd_settings, fresh_db):
+        """The sweep sizes its own client budget to the set, so probing every
+        unknown cannot starve the items it was going to price."""
+        from hd.db import base
+        from hd.pipeline.daily_deals import run_daily_deals
+
+        await base.init_db(dd_settings)
+        await seed_catalog(dd_settings, **{"100": "Milwaukee"})
+        dd_settings.daily_deals_probe_unknown = 250
+        ids = [str(i) for i in range(100, 210)]  # 110 ids, one of them tracked
+        client = FakeClient()
+
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set",
+                   return_value=DailyDealSet(end_date="2026-08-18", item_ids=ids)):
+            summary = await run_daily_deals(dd_settings, client=client)
+
+        assert len(client.requested) == 110
+        assert summary.skipped_unknown == 0
+        assert summary.aborted is False
+
+
+class TestCatalogPartition:
+    """Sizing the blind spot must cost no requests: it is a database question."""
+
+    async def test_partition_counts_the_three_kinds_and_spends_nothing(
+        self, dd_settings, fresh_db,
+    ):
+        from hd.db import base
+        from hd.pipeline.daily_deals import run_daily_deals
+
+        await base.init_db(dd_settings)
+        # 111 ours, 333 already answered "not ours", 777/888 never seen.
+        await seed_catalog(dd_settings, **{"111": "Milwaukee", "333": "RYOBI"})
+        deal_set = DailyDealSet(end_date="2026-08-18", item_ids=["111", "333", "777", "888"])
+        client = FakeClient()
+
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set", return_value=deal_set):
+            await run_daily_deals(dd_settings, client=client)
+
+        part = [e for e in _evidence(dd_settings) if e["phase"] == "partition"]
+        assert len(part) == 1
+        assert part[0]["tracked"] == 1
+        assert part[0]["known_not_ours"] == 1
+        assert part[0]["never_seen"] == 2
+        # Only the tracked item was requested: measuring cost no requests.
+        assert client.requested == ["111"]
+
+    async def test_an_already_answered_id_is_never_re_probed(self, dd_settings, fresh_db):
+        """A probe budget targets the blind spot, not questions we have paid for."""
+        from hd.db import base
+        from hd.pipeline.daily_deals import run_daily_deals
+
+        await base.init_db(dd_settings)
+        await seed_catalog(dd_settings, **{"333": "RYOBI"})
+        dd_settings.daily_deals_probe_unknown = 250
+        deal_set = DailyDealSet(end_date="2026-08-18", item_ids=["333", "777"])
+        client = FakeClient()
+
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set", return_value=deal_set):
+            await run_daily_deals(dd_settings, client=client)
+
+        # 333 is known not to be ours; only the never-seen 777 is worth asking about.
+        assert client.requested == ["777"]
+
+    async def test_partition_is_recorded_even_when_nothing_is_ours(
+        self, dd_settings, fresh_db,
+    ):
+        """The night that spends nothing is exactly the night whose blind-spot
+        size we need, so the measurement cannot sit behind the early return."""
+        from hd.db import base
+        from hd.pipeline.daily_deals import run_daily_deals
+
+        await base.init_db(dd_settings)
+        deal_set = DailyDealSet(end_date="2026-08-18", item_ids=[str(i) for i in range(100, 184)])
+        client = FakeClient()
+
+        with patch("hd.pipeline.daily_deals.fetch_daily_deal_set", return_value=deal_set):
+            summary = await run_daily_deals(dd_settings, client=client)
+
+        part = [e for e in _evidence(dd_settings) if e["phase"] == "partition"]
+        assert len(part) == 1 and part[0]["never_seen"] == 84
+        assert client.requested == [] and summary.items_checked == 0

@@ -296,7 +296,7 @@ async def _tracked_brand_items(settings: Settings, item_ids: list[str]) -> set[s
     from hd.db import base
     from hd.db.models import Product
 
-    uppers = [b.upper() for b in settings.brand_list]
+    uppers = [b.upper() for b in settings.daily_deals_brand_list]
     if not uppers:
         return set()
     async with base.get_session(settings) as session:
@@ -305,6 +305,29 @@ async def _tracked_brand_items(settings: Settings, item_ids: list[str]) -> set[s
                 Product.item_id.in_(item_ids),
                 func.upper(Product.brand).in_(uppers),
             )
+        )
+        return {r[0] for r in rows}
+
+
+async def _catalogued_items(settings: Settings, item_ids: list[str]) -> set[str]:
+    """Which of these item ids the catalog has ever seen, whatever the brand.
+
+    `_tracked_brand_items` answers "is it ours", which collapses two different
+    unknowns into one: an id the catalog has already answered "not ours" for,
+    and an id it has never seen at all. Only the second is a blind spot. The
+    first is a question we have already paid for, and re-asking it would spend
+    a request to be told what we know.
+    """
+    if not item_ids:
+        return set()
+    from sqlalchemy import select
+
+    from hd.db import base
+    from hd.db.models import Product
+
+    async with base.get_session(settings) as session:
+        rows = await session.execute(
+            select(Product.item_id).where(Product.item_id.in_(item_ids))
         )
         return {r[0] for r in rows}
 
@@ -385,9 +408,25 @@ async def _sweep(
     )
 
     tracked = await _tracked_brand_items(settings, item_ids)
-    unknown = [i for i in item_ids if i not in tracked]
+    catalogued = await _catalogued_items(settings, item_ids)
+    # The set splits three ways, and only the third is a blind spot: ours,
+    # already answered "not ours", and never seen at all. Recording the sizes
+    # costs one database query and no requests, which is what makes it possible
+    # to price the probe before buying it.
+    never_seen = [i for i in item_ids if i not in catalogued]
+    known_not_ours = len(catalogued) - len(tracked)
+    record_evidence(
+        settings, "partition", deal_set,
+        tracked=len(tracked), known_not_ours=known_not_ours,
+        never_seen=len(never_seen), probe_budget=max(0, settings.daily_deals_probe_unknown),
+    )
+    log.info(
+        "Daily-deals set partitioned against the catalog",
+        listed=len(item_ids), tracked=len(tracked),
+        known_not_ours=known_not_ours, never_seen=len(never_seen),
+    )
     probe = max(0, settings.daily_deals_probe_unknown)
-    targets = [i for i in item_ids if i in tracked] + unknown[:probe]
+    targets = [i for i in item_ids if i in tracked] + never_seen[:probe]
     summary.skipped_unknown = len(item_ids) - len(targets)
 
     if not targets:
@@ -397,6 +436,7 @@ async def _sweep(
             "Daily-deals set contains none of our brands — no requests made",
             end_date=deal_set.end_date,
             listed=len(item_ids),
+            never_seen=len(never_seen),
             categories=[c.get("name") for c in deal_set.categories],
         )
         _write_cursor(settings.daily_deals_cursor_path, deal_set.end_date)
@@ -408,13 +448,13 @@ async def _sweep(
 
     log.info(
         "Daily-deals candidates after brand filter",
-        candidates=len(targets), listed=len(item_ids), probing_unknown=min(probe, len(unknown)),
+        candidates=len(targets), listed=len(item_ids), probing_unknown=min(probe, len(never_seen)),
     )
     item_ids = targets
 
     owns_client = client is None
     client = client or HDClient(settings, request_budget=len(item_ids) + 10)
-    upper_brands = [b.upper() for b in settings.brand_list]
+    upper_brands = [b.upper() for b in settings.daily_deals_brand_list]
     now = datetime.now(timezone.utc)
     completed = True
 
@@ -520,6 +560,25 @@ def _start_offset_seconds(settings: Settings) -> int:
     return int(hashlib.sha256(seed.encode()).hexdigest(), 16) % (jitter + 1)
 
 
+def _phase_offset_seconds(settings: Settings, now_et: datetime) -> int:
+    """Extra delay before the first read, alternating night by night.
+
+    Six reads two minutes apart land on the same six minutes every night, so
+    a flip is only ever located to the interval that contains it. Holding the
+    series back by one interval-half on alternate nights samples the minutes
+    the other phase never sees, which halves the grid the refresh time is
+    known on without spending a single extra read.
+
+    The parity comes from the date rather than a counter: a night the machine
+    missed cannot flip the sequence, and the phase of any past run can be
+    recomputed from its timestamp when the evidence file is read back.
+    """
+    phase = max(0, settings.daily_deals_poll_phase_seconds)
+    if not phase:
+        return 0
+    return phase if now_et.date().toordinal() % 2 else 0
+
+
 async def wait_for_refresh(
     settings: Settings,
     client: HDClient | None = None,
@@ -529,7 +588,9 @@ async def wait_for_refresh(
 ) -> DailyDealsSummary:
     """Re-read the daily-deals page until its set changes, then sweep it.
 
-    Meant to start at 3:00 Eastern, when Home Depot resets the offers. Each
+    Meant to start at 3:00 Eastern, when Home Depot resets the offers — on
+    alternate nights one interval-half after it, so the reads fall on the
+    minutes the other phase misses (see `_phase_offset_seconds`). Each
     read that still shows the processed set is recorded and followed by a
     wait; the first read that shows a newer end date is swept at once, so the
     deals are priced within one poll interval of going live instead of an
@@ -569,7 +630,10 @@ async def wait_for_refresh(
     baseline = cursor
     max_polls = max(1, settings.daily_deals_poll_max) if in_window else 1
     jitter = max(0, settings.daily_deals_poll_jitter_seconds)
-    offset = _start_offset_seconds(settings) if in_window else 0
+    # Only inside the window: a poll that starts late is already off its slot,
+    # and delaying its single read further would only age the reading.
+    phase_offset = _phase_offset_seconds(settings, clock()) if in_window else 0
+    offset = (_start_offset_seconds(settings) + phase_offset) if in_window else 0
     if offset:
         await sleep(offset)
     started = datetime.now(timezone.utc)
@@ -625,6 +689,7 @@ async def wait_for_refresh(
         record_evidence(
             settings, "flip", deal_set,
             poll=attempt, previous=cursor, seconds_after_start=elapsed,
+            start_phase_seconds=phase_offset,
         )
         log.info(
             "Daily-deals set refreshed",

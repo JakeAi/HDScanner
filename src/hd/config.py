@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     browse_enabled: bool = True
     root_nav_param: str = "N-5yc1v"           # catalog root; brand/category tokens append with Z
     brand_tokens: str = ""                    # CSV of Brand:facet-token, written by `hd setup`
+    # Brands walked by the network tier only. The shelf tier costs a fixed
+    # ~63 requests per brand per pass and sits near the both-ends eligibility
+    # ceiling, so a brand whose in-store size has not been measured is held
+    # out of it until the network walk has shown what it holds. Empty means
+    # every brand in `brand_tokens` walks both tiers, as before.
+    network_only_brands: str = ""
+    # Brands the daily-deals post may publish. Empty means `brands`, as
+    # before. Exists so that adding a brand to the walk is not the same act as
+    # adding it to a surface named for another brand.
+    daily_deals_brands: str = ""
     api_max_start_index: int = 720            # API rejects startIndex > 720 ("Invalid start index range")
     browse_network_categories_per_run: int = 3  # ALL-tier categories walked per store per run
     # Per-hour tier assignment (US Eastern, CSV). Empty = every run does every
@@ -170,10 +180,23 @@ class Settings(BaseSettings):
     daily_deals_hours_et: str = ""
     daily_deals_cursor_path: str = ".hd_dailydeals_cursor"
     daily_deals_max_items: int = 250
-    # Items in the day's set that we have never seen are skipped by default:
-    # identifying one costs an API request, and across every completed sweep on
-    # record none of the ~110 daily deals were a tracked brand. Raise this to
-    # spend that many requests probing unknown ids anyway.
+    # Items in the day's set we have never seen carry no brand on the page, so
+    # the catalog cannot answer for them. Identifying one costs an API request.
+    #
+    # Held at 0 after the 2026-09-03 measurement pass. Probing every unknown was
+    # tried and reverted the same night for three reasons: the sweep discards a
+    # probe that is not our brand (`if not products: continue` precedes the
+    # upsert), so the ~110 requests a night would never decay; the obvious fix,
+    # recording what was probed, is not a logging change, because
+    # _upsert_products marks a row is_active and the snapshot pipeline prices
+    # every active product with no brand filter — non-tool deal items would
+    # silently join the daily rotation; and the size of the blind spot has never
+    # been measured, so there was nothing to weigh the cost against.
+    #
+    # The "partition" evidence line now records that size for zero requests. Set
+    # this once those counts say what probing would actually buy. When raising
+    # it, note that the probe targets only ids the catalog has NEVER seen — an
+    # id it already answered "not ours" for is not re-requested.
     daily_deals_probe_unknown: int = 0
     # `hd daily-deals --wait-for-refresh` re-reads the page every
     # daily_deals_poll_seconds until the embedded set's end date changes, for
@@ -186,6 +209,16 @@ class Settings(BaseSettings):
     # argument scan_minute makes): the first read waits a per-install 0..N s,
     # and each interval is stretched by a random 0..N s. Only ever delays.
     daily_deals_poll_jitter_seconds: int = 15
+    # Reads two minutes apart always land on the same minutes (3:00, 3:02, ...),
+    # so the flip is only ever bracketed to the interval that contains it. On
+    # alternating nights the first read is held back by this many seconds, which
+    # shifts the whole series (3:01, 3:03, ...) and samples the minutes the other
+    # phase never sees. Across nights that halves the grid the flip time is known
+    # on, for the same six reads — no extra requests. 0 disables the alternation
+    # and every night runs the even series. Which night is which is derived from
+    # the date, not stored, so a missed night does not flip the sequence and the
+    # phase of any past run can be recomputed from its timestamp.
+    daily_deals_poll_phase_seconds: int = 60
     # Every read of the page appends one JSON line here: end date, item count,
     # a digest of the item list. The routine sweep reads the page on the runs
     # DAILY_DEALS_HOURS_ET selects (empty = every run), so with it empty this
@@ -411,6 +444,15 @@ class Settings(BaseSettings):
     @property
     def scan_keyword_list(self) -> list[str]:
         return _parse_csv(self.scan_keywords)
+
+    @property
+    def network_only_brand_list(self) -> list[str]:
+        return [b.upper() for b in _parse_csv(self.network_only_brands)]
+
+    @property
+    def daily_deals_brand_list(self) -> list[str]:
+        """Brands the daily-deals post is scoped to; `brand_list` unless set."""
+        return _parse_csv(self.daily_deals_brands) or self.brand_list
 
     @property
     def brand_token_list(self) -> list[tuple[str, str]]:
