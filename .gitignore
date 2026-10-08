@@ -52,3 +52,10 @@ Thumbs.db
 
 # Stray empty scratch database.
 x.db
+
+# Private browser configuration and runtime state
+.hd_browser_token
+browser-private.env
+browser-data/
+browser-source/
+backups/

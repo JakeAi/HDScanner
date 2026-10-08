@@ -120,3 +120,19 @@ class CurlTransport:
     async def close(self) -> None:
         """Nothing to release: each request is its own process."""
         return None
+
+
+def make_transport(settings: Any) -> Transport:
+    """Choose the explicitly configured transport; curl remains the default."""
+    if getattr(settings, "http_transport", "curl") == "browser":
+        from hd.http.browser import BrowserTransport
+        return BrowserTransport(
+            service_url=settings.browser_service_url,
+            token_file=settings.browser_token_file,
+            timeout_seconds=settings.browser_timeout_seconds,
+            max_bytes=settings.max_response_bytes,
+        )
+    return CurlTransport(
+        timeout_seconds=getattr(settings, "read_timeout_seconds", 30.0),
+        max_bytes=getattr(settings, "max_response_bytes", 10 * 1024 * 1024),
+    )

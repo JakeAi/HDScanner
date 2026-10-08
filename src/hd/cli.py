@@ -257,6 +257,17 @@ def browse(
         return summary
 
     summary = _run(_browse())
+    # A manual browse is also collection evidence. Keep liveness current
+    # without invoking the full pipeline's optional outbound notifications.
+    if summary.snapshots or summary.aborted:
+        from datetime import datetime, timezone
+        from hd.pipeline.health import load_scan_health, next_scan_health, save_scan_health
+        state, _ = next_scan_health(
+            load_scan_health(settings.health_state_path),
+            summary.snapshots > 0,
+            datetime.now(timezone.utc),
+        )
+        save_scan_health(settings.health_state_path, state)
     msg = (
         f"[green]Browse complete: {summary.products} products, "
         f"{summary.snapshots} snapshots across {summary.walks} walk(s)."

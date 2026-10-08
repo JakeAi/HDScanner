@@ -1,5 +1,7 @@
 # HD Clearance Monitor
 
+This fork adds a Docker dashboard and an optional headed CloakBrowser transport for Unraid. See [the Unraid deployment guide](UNRAID-DASHBOARD.md) for the two-container setup, private browser configuration, validation and rollback. The original project is [KenStager/HDScanner](https://github.com/KenStager/HDScanner).
+
 Watches specific Home Depot stores for clearance markdowns, price drops and
 restocks on the brands you care about, and tells you when something genuinely
 gets cheaper.

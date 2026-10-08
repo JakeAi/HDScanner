@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -244,6 +244,11 @@ class Settings(BaseSettings):
 
     # Request limits. There is no connection pooling: the API refuses Python
     # HTTP clients outright, so every request is its own curl process.
+    http_transport: Literal["curl", "browser"] = "curl"
+    browser_service_url: str = "http://hdscanner-browser:4010"
+    browser_token_file: str = ".hd_browser_token"
+    browser_timeout_seconds: float = Field(default=120.0, gt=0)
+
     read_timeout_seconds: float = 30.0
     max_response_bytes: int = 10 * 1024 * 1024
 
@@ -365,6 +370,13 @@ class Settings(BaseSettings):
     # Minute past the hour. None derives one from this install's path so that
     # many installs do not all fire on the same minute.
     scan_minute: int | None = None
+
+    # Read-only host files mounted by the Unraid deployment. Empty keeps the
+    # existing launchd checks; a missing configured file remains a failure.
+    unraid_cron_path: str = ""
+    unraid_container_name: str = "hdscanner"
+    unraid_scan_script_path: str = "/boot/config/plugins/user.scripts/scripts/hdscanner/script"
+    unraid_prune_script_path: str = "/boot/config/plugins/user.scripts/scripts/hdscanner-prune/script"
 
     @property
     def store_list(self) -> list[str]:

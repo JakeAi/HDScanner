@@ -70,6 +70,9 @@ def _plists() -> list[Path]:
 
 def check_scheduler(settings: Settings) -> Iterable[Check]:
     """The scan job exists, is loaded, and runs the interpreter we think it does."""
+    if settings.unraid_cron_path:
+        yield _check_unraid_job(settings, "scheduler", settings.unraid_scan_script_path, "run-once")
+        return
     plists = [
         p for p in _plists()
         if not any(job in p.name for job in ("dashboard", "prune", "backup", "dailydeals"))
@@ -144,6 +147,9 @@ def _check_interpreter(data: dict[str, Any], path: Path) -> Iterable[Check]:
 
 def check_prune_job(settings: Settings) -> Iterable[Check]:
     """Nothing else deletes old snapshots; without this the database only grows."""
+    if settings.unraid_cron_path:
+        yield _check_unraid_job(settings, "prune-job", settings.unraid_prune_script_path, "prune")
+        return
     prune = [p for p in _plists() if "prune" in p.name]
     if not prune:
         yield Check("prune-job", FAIL, "no prune job installed — snapshots are never deleted",
@@ -161,6 +167,43 @@ def check_prune_job(settings: Settings) -> Iterable[Check]:
                         f"launchctl load {path}")
         else:
             yield Check("prune-job", OK, f"{label} loaded")
+
+
+def _check_unraid_job(settings: Settings, name: str, script_path: str, command: str) -> Check:
+    """Check the installed host cron entry and its actual scanner command."""
+    import shlex
+
+    try:
+        cron = Path(settings.unraid_cron_path).read_text()
+        script = Path(script_path).read_text()
+    except OSError:
+        return Check(name, FAIL, f"Unraid {command} schedule files are unavailable",
+                     "check the read-only host schedule mounts")
+    schedules = []
+    for line in cron.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if len(tokens) > 6 and script_path in tokens[5:] and any(
+            token.endswith("/user.scripts/startCustom.php") for token in tokens[5:]
+        ):
+            schedules.append(" ".join(tokens[:5]))
+    expected = ["docker", "exec", settings.unraid_container_name, "hd", command]
+    invokes_scanner = False
+    for line in script.splitlines():
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if tokens[:5] == expected:
+            invokes_scanner = True
+    if not schedules or not invokes_scanner:
+        return Check(name, FAIL, f"Unraid {command} job is missing or does not invoke this scanner",
+                     "check its User Scripts schedule and command")
+    return Check(name, OK, f"Unraid {command} job installed — {', '.join(schedules)}")
 
 
 def check_cooldown(settings: Settings) -> Iterable[Check]:

@@ -35,10 +35,10 @@ from hd.dashboard.queries import (
 ONLINE_TAB = ONLINE_STORE_KEY
 
 
-@ui.page("/")
+@ui.page("/deals")
 async def overview_page() -> None:
     settings = _state.settings
-    render_header(settings.dashboard_title, current_path="/")
+    render_header(settings.dashboard_title, current_path="/deals")
     await render_health_banner(settings)
 
     # Per-client view state

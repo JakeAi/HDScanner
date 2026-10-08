@@ -10,7 +10,8 @@ from __future__ import annotations
 from nicegui import ui
 
 _NAV_LINKS = [
-    ("Deals", "/"),
+    ("Overview", "/"),
+    ("Deals", "/deals"),
     ("Products", "/products"),
     ("Alerts", "/alerts"),
     ("Stores", "/stores"),
@@ -332,6 +333,8 @@ a.deal-card:focus-visible { outline: 3px solid var(--hd-orange); outline-offset:
 def apply_theme() -> None:
     """Inject the shared fonts and stylesheet. Call once per page."""
     ui.add_head_html(_THEME)
+    ui.add_head_html(_MONITOR_THEME)
+    ui.colors(primary="#ed4557")
 
 
 def render_header(title: str = "HD Clearance Monitor", current_path: str = "/") -> None:
@@ -339,8 +342,66 @@ def render_header(title: str = "HD Clearance Monitor", current_path: str = "/") 
     apply_theme()
     with ui.header().classes("hd-header items-center justify-between px-6 py-3"):
         with ui.element("div").classes("hd-wordmark"):
-            ui.html('CLEARANCE&nbsp;<span class="accent">SCANNER</span>')
+            ui.html('HD<span class="accent">SCANNER</span>')
         with ui.element("nav").classes("hd-nav flex gap-6"):
             for label, href in _NAV_LINKS:
                 cls = "active" if href == current_path else ""
                 ui.html(f'<a href="{href}" class="{cls}">{label}</a>')
+
+# Extends the established card language across the operational dashboard.
+_MONITOR_THEME = """
+<style>
+:root { --hd-bg:#0d1420; --hd-surface:#151f2e; --hd-orange:#ff7885;
+ --hd-text:#eef3fa; --hd-muted:#acb9ca; }
+body, .hd-body { font-family:Inter,system-ui,sans-serif; font-size:1rem; color:var(--hd-text); }
+.q-page { background:var(--hd-bg); }
+.hd-header { border-bottom:1px solid #2b3648; padding:18px 32px; gap:20px; }
+.hd-wordmark { font-family:Inter,system-ui,sans-serif; letter-spacing:-.04em; font-size:1.45rem; }
+.hd-wordmark .accent { color:#ff7885; }
+.hd-nav { flex-wrap:wrap; gap:24px; }
+.hd-nav a { font-size:.875rem; padding:8px 0; }
+.hd-nav a.active { border-bottom-color:#ff7885; }
+.hd-nav a:focus-visible, .monitor-link:focus-visible { outline:2px solid #ff7885; outline-offset:5px; }
+.monitor-wrap { width:100%; max-width:1380px; margin:0 auto; padding:32px 24px 24px; }
+.monitor-title { font-size:clamp(1.8rem,3vw,2.25rem); font-weight:700; letter-spacing:-.04em; line-height:1.2; }
+.monitor-eyebrow { font-size:.75rem; font-weight:650; letter-spacing:.12em; color:var(--hd-muted); }
+.monitor-muted { color:var(--hd-muted); font-size:.875rem; }
+.monitor-caption { color:var(--hd-muted); font-size:.875rem; line-height:1.55; }
+.monitor-refresh { color:var(--hd-text)!important; border-radius:8px; font-size:.875rem; }
+.monitor-health { width:100%; padding:24px; border:1px solid #334258; border-left:4px solid #8194af;
+ border-radius:10px; background:#182337; display:flex; justify-content:space-between; align-items:center; gap:28px; }
+.monitor-health.warning { border-color:#725631; border-left-color:#f7b955; background:#251f19; }
+.monitor-health.warning .q-icon { color:#f7b955; }
+.monitor-health.good { border-color:#30554b; border-left-color:#60d6aa; background:#142a27; }
+.monitor-health-detail { color:#d0d7e2; max-width:720px; font-size:1rem; line-height:1.55; }
+.monitor-health-time { min-width:230px; }
+.monitor-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; width:100%; }
+.monitor-metric { border:1px solid #29364a; border-radius:10px; padding:22px; background:var(--hd-surface); }
+.monitor-number { font-size:2.5rem; line-height:1.1; letter-spacing:-.05em; font-weight:700; margin:18px 0 10px; font-variant-numeric:tabular-nums; }
+.monitor-columns { display:grid; grid-template-columns:minmax(0,1.8fr) minmax(280px,1fr); gap:20px; width:100%; }
+.monitor-panel { border:1px solid #29364a; border-radius:10px; padding:24px; background:var(--hd-surface); min-width:0; }
+.monitor-section-title { font-size:1.1rem; font-weight:650; letter-spacing:-.02em; }
+.monitor-empty { min-height:250px; padding:28px 16px; gap:16px; }
+.monitor-link { color:#ff8994!important; font-size:.875rem; text-decoration:none; }
+.monitor-link:hover { text-decoration:underline; }
+.monitor-tag { color:#dce5f3!important; border-color:#43516a!important; font-size:.875rem; padding:7px 10px; border-radius:6px; white-space:normal; }
+.monitor-alert-row { width:100%; padding:16px 0; gap:18px; align-items:center; border-top:1px solid #29364a; }
+.deal-title { font-size:.875rem; }
+.deal-chip { font-size:.75rem; }
+.hd-chip,.hd-status,.hd-advisory,.hd-banner-line { font-size:.875rem; }
+.deal-wrap .deal-hide { opacity:1; }
+body.body--light { color:#eef3fa; }
+@media(max-width:1000px) { .monitor-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .monitor-health { align-items:flex-start; flex-direction:column; } }
+@media(max-width:700px) { .monitor-columns { grid-template-columns:1fr; } .monitor-wrap { padding:24px 8px; } .hd-header { padding:16px; } .hd-nav { gap:18px; } .monitor-panel,.monitor-metric { padding:18px; } .monitor-health { padding:18px; } }
+@media(max-width:380px) { .monitor-metrics { grid-template-columns:1fr; } }
+</style>
+"""
+
+_MONITOR_THEME += """
+<style>
+.monitor-runs { background:transparent!important; color:var(--hd-text); }
+.monitor-runs th { color:var(--hd-muted); font-size:.875rem!important; }
+.monitor-runs td { font-size:.875rem!important; padding-top:16px!important; padding-bottom:16px!important; }
+.monitor-runs .q-table__middle { overflow-x:auto; }
+</style>
+"""

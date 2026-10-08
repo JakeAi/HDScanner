@@ -26,7 +26,7 @@ def run_dashboard(settings: Settings) -> None:
         await close_db()
 
     # Import pages to register @ui.page routes
-    from hd.dashboard.pages import alerts, overview, products, stores  # noqa: F401
+    from hd.dashboard.pages import alerts, home, overview, products, stores  # noqa: F401
 
     ui.run(
         host=settings.dashboard_host,

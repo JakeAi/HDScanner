@@ -19,6 +19,7 @@ from hd.http.cooldown import ThrottleCooldown
 from hd.http.metrics import RequestMetrics
 from hd.http.transport import (
     CurlTransport,
+    make_transport,
     RawResponse,
     Transport,
     TransportError,
@@ -235,10 +236,7 @@ class HDClient:
         transport: Transport | None = None,
     ) -> None:
         self._settings = settings
-        self._transport = transport or CurlTransport(
-            timeout_seconds=getattr(settings, "read_timeout_seconds", 30.0),
-            max_bytes=getattr(settings, "max_response_bytes", 10 * 1024 * 1024),
-        )
+        self._transport = transport or make_transport(settings)
         self._rate_limiter = TokenBucketRateLimiter(
             rps=settings.rate_limit_rps,
             burst=getattr(settings, "rate_limit_burst", 1),

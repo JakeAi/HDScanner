@@ -1,0 +1,51 @@
+name: hdscanner
+services:
+  scanner:
+    image: hdscanner:browser
+    pull_policy: never
+    container_name: hdscanner
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    volumes:
+      - /mnt/user/appdata/hdscanner/data:/data
+      - /etc/cron.d:/host-cron:ro
+      - /boot/config/plugins/user.scripts/scripts/hdscanner:/boot/config/plugins/user.scripts/scripts/hdscanner:ro
+      - /boot/config/plugins/user.scripts/scripts/hdscanner-prune:/boot/config/plugins/user.scripts/scripts/hdscanner-prune:ro
+    environment:
+      HTTP_TRANSPORT: browser
+      BROWSER_SERVICE_URL: http://hdscanner-browser:4010
+      BROWSER_TOKEN_FILE: .hd_browser_token
+      BROWSER_TIMEOUT_SECONDS: "120"
+      MAX_ATTEMPTS: "1"
+      UNRAID_CRON_PATH: /host-cron/root
+      SCAN_HOURS_ET: "4,12,20"
+      SCAN_MINUTE: "17"
+    depends_on:
+      browser:
+        condition: service_healthy
+  browser:
+    image: hdscanner-browser:local
+    pull_policy: never
+    container_name: hdscanner-browser
+    hostname: hdscanner-browser
+    restart: unless-stopped
+    stop_grace_period: 150s
+    shm_size: 1gb
+    env_file: /mnt/user/appdata/hdscanner/browser-private.env
+    environment:
+      HD_BROWSER_ENGINE: cloakbrowser
+    security_opt:
+      - seccomp=/mnt/user/appdata/actual-receipt-companion/source/crawler/seccomp_profile.json
+    volumes:
+      - /mnt/user/appdata/hdscanner/browser-data:/browser-data
+      - /mnt/user/appdata/hdscanner/data/.hd_browser_token:/run/hd-browser-token:ro
+      - /mnt/user/appdata/hdscanner/data/.hd_throttle_cooldown:/scanner-data/.hd_throttle_cooldown:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      default:
+        aliases: [hdscanner-browser]

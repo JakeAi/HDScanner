@@ -944,3 +944,24 @@ async def test_a_run_that_deferred_nothing_records_zero_not_null(tmp_path):
     await base.close_db()
 
     assert stored == 0
+
+
+@pytest.mark.parametrize('command,name', [('run-once','scheduler'), ('prune','prune-job')])
+def test_unraid_jobs_require_active_cron_and_correct_container(tmp_path, command, name):
+    from hd.doctor import check_scheduler, check_prune_job
+    script = tmp_path / 'script'
+    cron = tmp_path / 'cron'
+    script.write_text(f'#!/bin/bash\ndocker exec hdscanner hd {command}\n')
+    entry = f'17 4,12,20 * * * /usr/local/emhttp/plugins/user.scripts/startCustom.php {script} > /dev/null 2>&1\n'
+    cron.write_text(entry)
+    s = settings_for(tmp_path, unraid_cron_path=str(cron),
+                     unraid_scan_script_path=str(script), unraid_prune_script_path=str(script))
+    check = check_scheduler if name == 'scheduler' else check_prune_job
+    assert list(check(s))[0].status == OK
+    cron.write_text('# ' + entry)
+    assert list(check(s))[0].status == FAIL
+    cron.write_text(entry)
+    script.write_text(f'docker exec other-container hd {command}\n')
+    assert list(check(s))[0].status == FAIL
+    cron.unlink()
+    assert list(check(s))[0].status == FAIL

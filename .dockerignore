@@ -1,0 +1,26 @@
+.git
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite*
+.hd_*
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+build
+dist
+*.egg-info
+**/*.egg-info
+diagnostics
+raw_responses
+data
+
+# Private browser configuration and runtime state
+.hd_browser_token
+browser-private.env
+browser-data/
+browser-source/
+backups/

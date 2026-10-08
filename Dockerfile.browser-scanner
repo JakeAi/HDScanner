@@ -1,0 +1,5 @@
+FROM hdscanner:dashboard
+COPY src/hd/config.py /opt/hdscanner/src/hd/config.py
+COPY src/hd/http/browser.py src/hd/http/transport.py src/hd/http/client.py /opt/hdscanner/src/hd/http/
+COPY src/hd/hd_api/stores.py /opt/hdscanner/src/hd/hd_api/stores.py
+COPY src/hd/doctor.py src/hd/cli.py /opt/hdscanner/src/hd/

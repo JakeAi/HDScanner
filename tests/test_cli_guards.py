@@ -121,3 +121,21 @@ class TestDealsPollCommands:
         assert data["WorkingDirectory"] == str(tmp_path)
         assert "--load was ignored" in trailer
         assert not list(tmp_path.glob("*.plist"))
+
+
+def test_manual_browse_replaces_old_failure_with_real_collection(monkeypatch, tmp_path):
+    from hd.config import Settings
+    from hd.pipeline.browse import BrowseSummary
+    from hd.pipeline.health import HealthStatus, ScanHealth, save_scan_health, load_scan_health
+    s = Settings()
+    save_scan_health(s.health_state_path, ScanHealth(status=HealthStatus.DEGRADED, consecutive_failures=59))
+    async def collected(**kwargs):
+        return BrowseSummary(products=97, snapshots=97, walks=5)
+    monkeypatch.setenv('BRAND_TOKENS', 'Milwaukee:zv')
+    monkeypatch.setattr('hd.pipeline.browse.run_browse', collected)
+    result = runner.invoke(app, ['browse', '--stores', '3888', '--tier', 'shelf'])
+    assert result.exit_code == 0, result.output
+    state = load_scan_health(s.health_state_path)
+    assert state.status == HealthStatus.HEALTHY
+    assert state.consecutive_failures == 0
+    assert state.last_ok

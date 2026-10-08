@@ -166,6 +166,39 @@ async def _post(
     which are benign. Transport, HTTP and throttle failures raise, since no
     caller can do anything useful with those.
     """
+    from hd.config import Settings
+    from hd.http.cooldown import ThrottleCooldown
+    from hd.http.transport import make_transport, TransportError
+
+    settings = Settings()
+    if settings.http_transport == "browser":
+        cooldown = ThrottleCooldown(settings.throttle_cooldown_path, settings.throttle_cooldown_seconds)
+        if cooldown.is_active():
+            raise StoreLookupThrottled("Store lookup deferred until the saved cooldown expires.")
+        payload = {"operationName": operation, "variables": variables, "query": query}
+        transport = make_transport(settings)
+        try:
+            response = await transport.post_json(
+                f"{endpoint}?opname={operation}", payload,
+                dict(h.split(": ", 1) for h in _headers()),
+            )
+        except TransportError as exc:
+            raise StoreLookupError(str(exc)) from exc
+        finally:
+            await transport.close()
+        if response.status in (206, 403, 429):
+            cooldown.start()
+            raise StoreLookupThrottled(f"Home Depot returned HTTP {response.status}; cooldown saved.")
+        if response.status != 200:
+            raise StoreLookupError(f"Home Depot returned HTTP {response.status}")
+        try:
+            parsed = json.loads(response.body)
+        except json.JSONDecodeError as exc:
+            raise StoreLookupError("Home Depot returned a non-JSON response") from exc
+        if not isinstance(parsed, dict):
+            raise StoreLookupError("Home Depot returned an invalid JSON response")
+        return parsed.get("data") or {}, parsed.get("errors") or []
+
     payload = {"operationName": operation, "variables": variables, "query": query}
 
     cmd = [
